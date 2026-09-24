@@ -32,7 +32,7 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
-    "README.zh.md",
+    "README.en.md",
     "LICENSE"
   ],
   "scripts": {

@@ -1,72 +1,72 @@
 # dsh-budget-guard
 
-English | [中文](README.zh.md)
+中文 | [English](README.en.md)
 
-**Cap what one DeepSeek Harness session can spend — before the invoice does.**
+**在一次 DeepSeek Harness 会话花爆预算之前，先给它设一个上限。**
 
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-blue)](https://github.com/topics/dsh-plugin) [![license: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-`dsh-budget-guard` is a drop-in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that watches each session's cumulative billed tokens — and, from a price table you supply, its cost — and warns or circuit-breaks when a budget is crossed.
+`dsh-budget-guard` 是一个可直接挂载的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件：它持续统计每个会话累计计费的 token，并可按你自己提供的价格表折算成金额，一旦越过预算就告警或熔断。
 
-## The problem
+## 问题
 
-`dsh` bounds a run by **rounds** and by **context occupancy**. Nothing bounds it by **spend**.
+`dsh` 会用**轮次**和**上下文占用**来约束一次运行，但没有任何机制按**开销**约束它。
 
-Those are different quantities, and the gap is where surprises live. A step's cost is not flat: prompt tokens ride the whole history, a mid-session tool or system-prompt change turns a cache read into a cache write, a retry storm re-bills entire attempts, and one tool loop can add thirty steps to a single turn. So the cumulative cost curve is spiky rather than linear — one turn can spend more than the previous hour — and the loop keeps going, because its only stopping conditions are "the model stopped asking" and "the round limit was hit".
+这是两回事，而意外恰恰藏在差值里。每一步的开销并不均匀：prompt token 会带着整段历史一起上涨，会话中途改动工具或系统提示会把缓存读变成缓存写，重试风暴会把整次尝试重新计一遍费，一个工具循环还能在单轮里加上三十个 step。于是累计开销曲线是突刺状而非线性的——某一轮的消耗可以超过之前一整个小时——而循环照旧继续，因为它只知道两个停止条件：“模型不再请求”和“轮次上限到了”。
 
-That is the failure this guard closes: not a slow leak, but the point where an agent goes away and comes back with a ten-figure token bill.
+这个守卫要堵的就是这个漏洞：不是缓慢泄漏，而是 agent 走开一会儿、回来时带着一张十位数量级的 token 账单。
 
-## What this plugin does
+## 这个插件做什么
 
-At every step boundary it reads the session's spend and takes the mildest applicable action:
+在每个 step 边界读取会话已产生的开销，并采取当前最轻的处置：
 
-| Spend | `action: stop` (default) | `action: warn` |
+| 开销 | `action: stop`（默认） | `action: warn` |
 | --- | --- | --- |
-| below `warnRatio` | continue | continue |
-| ≥ `warnRatio` of a cap | one "wrap up" notice to the model | one "wrap up" notice |
-| ≥ the cap | one "the agent stops after this step" notice, then the **next** step boundary is rejected | one louder over-cap notice, then keep running |
+| 低于 `warnRatio` | 继续 | 继续 |
+| 达到某个上限的 `warnRatio` | 向模型注入一次「收尾」提示 | 注入一次「收尾」提示 |
+| 达到上限 | 先注入一次「本 step 之后将停止」提示，**下一个** step 边界被拒绝 | 注入一次更明确的超限提示，然后继续运行 |
 
-- **The model sees the notice**, as a labeled `form: 'notice'` context message — so it can finish the job inside the budget rather than being cut off mid-sentence.
-- **The operator sees it too**, in the transcript and in the log (`INFO` on a notice, `WARN` on a rejection).
-- **One notice per crossing**, never every step.
+- **模型能看到提示**：它以带标签的 `form: 'notice'` 上下文消息注入，所以模型有机会在预算内把活干完，而不是话说一半被掐断。
+- **操作者也能看到**：既在会话记录里，也在日志里（提示是 `INFO`，拒绝是 `WARN`）。
+- **每次越级只提示一次**，不会每一步都唠叨。
 
-### Why the counter is a session projection
+### 为什么计数器是一个 session projection
 
-A budget guard that resets when you restart the process is not a budget guard — `dsh` sessions are long-lived and are resumed and forked constantly.
+一个进程重启就清零的预算守卫算不上预算守卫——`dsh` 的会话是长生命周期的，会被不断恢复和 fork。
 
-So the running spend is not plugin state. It is a registered **session projection** (`budgetGuardSpend`), the harness's own mechanism for deriving durable per-session values from the event log: it replays on restore, so a resumed session continues from what it already spent, and a fork inherits its prefix's total. Per-model buckets are what let a currency ceiling be honest — each model's tokens are priced at that model's rate, while the token ceiling sums them.
+所以累计开销不是插件私有状态，而是注册进去的一个 **session projection**（`budgetGuardSpend`）：这是 harness 自己用来从事件日志派生持久会话状态的机制，恢复时会重放，因此被恢复的会话从已花掉的额度继续，fork 出的子会话继承其前缀的总额。按模型分桶则让金额上限有可能诚实——每个模型的 token 按该模型的单价计费，而 token 上限把它们求和。
 
-## Install
+## 安装
 
-From a published package:
+从已发布的包安装：
 
 ```sh
 dsh plugin add dsh-budget-guard
 ```
 
-From this repository:
+从本仓库安装：
 
 ```sh
 dsh plugin --profile <name> add github:5quan/dsh-budget-guard
 ```
 
-Or load it for a single run without installing, against a source checkout of the harness:
+或者不安装、只针对单次运行加载（配一份 harness 源码 checkout）：
 
 ```sh
 pnpm dsh web --patch ../dsh-budget-guard/cordis.patch.yml
 ```
 
-## Configuration
+## 配置
 
-| Key | Type | Default | Meaning |
+| 键 | 类型 | 默认值 | 含义 |
 | --- | --- | --- | --- |
-| `tokenBudget` | integer | `0` | Session cumulative billed-token cap. `0` leaves tokens uncapped. |
-| `costBudgetUsd` | number | `0` | Session cumulative cost cap in USD. Needs a `rates` entry for every model you want priced. |
-| `warnRatio` | number `0–1` | `0.8` | Fraction of either cap that raises the "wrap up" notice. |
-| `action` | `stop` \| `warn` | `stop` | At the cap: end the run after one converging step, or only notify. |
-| `rates` | map | `{}` | USD per one million tokens, keyed by `provider/model`. |
+| `tokenBudget` | 整数 | `0` | 会话累计计费 token 上限。`0` 表示 token 不设上限。 |
+| `costBudgetUsd` | 数值 | `0` | 会话累计开销的美元上限。想被计费到的模型都必须在 `rates` 里列出。 |
+| `warnRatio` | `0–1` 数值 | `0.8` | 任一上限达到该比例时注入「收尾」提示。 |
+| `action` | `stop` \| `warn` | `stop` | 到达上限时：在本 step 后结束运行，还是仅提示。 |
+| `rates` | map | `{}` | 每百万 token 的美元价，键为 `provider/model`。 |
 
-At least one of `tokenBudget` and `costBudgetUsd` must be above zero; a configuration that caps nothing fails loudly at load instead of silently doing nothing.
+`tokenBudget` 与 `costBudgetUsd` 至少要有一个大于零；一个什么都不设限的配置会在加载时直接报错，而不是静默地什么也不做。
 
 ```yaml
 - id: budget-guard
@@ -83,50 +83,50 @@ At least one of `tokenBudget` and `costBudgetUsd` must be above zero; a configur
         cacheWrite: 0.27
 ```
 
-**No prices are baked in, on purpose.** Provider price sheets change monthly and any table shipped here would go stale silently. `tokenBudget` needs no configuration to work; `costBudgetUsd` activates only for models you list.
+**这里刻意不内置任何价格。** 供应商价目表每月都在变，任何写死在这里的表都会悄无声息地过期。`tokenBudget` 开箱即用；`costBudgetUsd` 只对你列出的模型生效。
 
-## How it stays safe
+## 为什么它安全
 
-- **No core changes.** Two documented extension points: one registered projection and one `agent/pre-step` waterfall listener. Nothing else is touched.
-- **A cut that explains itself.** Rejection happens at a step boundary and is preceded by one notice, so the run ends with the model's summary rather than a truncation.
-- **Unknown price is not free.** A model with no `rates` entry contributes tokens but no cost, and the cost ceiling is skipped entirely while nothing used is priced — it never treats an unpriced session as a zero-cost one.
-- **Read-only accounting.** Only settled provider usage is folded in; nothing here estimates or invents a number to gate on.
+- **不改内核。** 只用两个有文档的扩展点：注册一个 projection，加一个 `agent/pre-step` waterfall 监听器。别的都不碰。
+- **断得清楚。** 拒绝发生在 step 边界，并且前面一定有一次提示，所以运行结束时你拿到的是模型的总结，而不是一段被截断的输出。
+- **不知道价格不等于免费。** 没有 `rates` 条目的模型只贡献 token、不贡献金额；只要所用模型全都无价，金额维度就整条跳过——它绝不会把一笔未计价当成零成本。
+- **只读记账。** 只折叠已结算的 provider usage；这里不估算、不编造任何用来做闸门的数字。
 
-## Known limitations
+## 已知限制
 
-- An adapter that reports no usage contributes nothing, so such a session under-counts against both ceilings.
-- A billed attempt that never settled into a final message has no `provider/model` route, so it folds under `unattributed`: it counts against `tokenBudget` and prices no cost.
-- `costBudgetUsd` is only as accurate as your `rates`. Treat currency as an estimate and `tokenBudget` as the exact control.
-- Which notice was already sent is in-process, so a restart can re-send the "wrap up" notice. Spend itself never resets.
-- Budgets are per session, not per account or per day, and a fork inherits its parent's spend by design.
-- A cap reached *during* a streaming step cannot be unspent: that step finishes and the guard cuts at the next boundary.
+- 不上报 usage 的 adapter 不贡献任何计数，这类会话会在两个上限上都偏低。
+- 一条已计费但最终没有落成消息的 attempt 没有 `provider/model` 路由，因此折进 `unattributed`：它计入 `tokenBudget`，但不产生金额。
+- `costBudgetUsd` 的准确度取决于你的 `rates`。请把金额当作估算，把 `tokenBudget` 当作精确控制。
+- 「哪次提示已经发过」是进程内状态，所以重启后「收尾」提示可能再发一次。开销本身不会重置。
+- 预算按会话计，不按账户或自然日计；fork 按设计继承父会话的已花额度。
+- 上限是在流式 step **过程中**到达的话，那一步的 token 已经花出去了：该 step 会跑完，守卫在下一个边界切断。
 
-## Development
+## 开发
 
 ```sh
-npm install --legacy-peer-deps   # or pnpm install
-npm test                         # 49 tests: arithmetic + fold + events + policy + wiring
+npm install --legacy-peer-deps   # 或 pnpm install
+npm test                         # 49 个单测：算术 + 折叠 + 事件 + 策略 + 接线
 npx tsc --noEmit -p tsconfig.json
 npm run build                    # tsdown -> lib/
 ```
 
-Layout:
+目录结构：
 
 ```
-src/budget.ts   billed-token / USD arithmetic and ok-warn-over classification
-src/spend.ts    the durable per-model fold (replacement slot, retry reopening)
-src/events.ts   session event → fold input (which events bill, route extraction)
-src/guard.ts    escalation policy: pass / notice / reject, once per crossing
-src/index.ts    thin cordis wiring: projection registration + pre-step listener
-cordis.patch.yml  the bundle layer that inserts the plugin row
+src/budget.ts   计费 token / 美元算术，以及 ok-warn-over 分级
+src/spend.ts    持久化的按模型折叠（同槽位替换、重试重开槽位）
+src/events.ts   会话事件 → 折叠输入（哪些事件计费、如何取路由）
+src/guard.ts    升级策略：pass / notice / reject，每次越级一次
+src/index.ts    轻量的 cordis 接线：注册 projection + pre-step 监听器
+cordis.patch.yml  插入该插件行的 bundle 层
 ```
 
-`budget.ts`, `spend.ts`, `events.ts` and `guard.ts` import nothing from the harness, so most of `npm test` validates the accounting, the fold, the normalization and the policy anywhere — no composition, no API key. `tests/plugin.test.ts` drives the real `apply()` against a stand-in context: it asserts the projection unit folds a genuine `assistant/message` event into per-model spend and round-trips through its declared schemas, that a warn-ratio step gets its notice prepended to the downstream messages, and that an over-cap `stop` run is announced first and vetoed at the next boundary without ever calling `next()`.
+`budget.ts`、`spend.ts`、`events.ts`、`guard.ts` 不 import 任何 harness 依赖，因此大部分 `npm test` 在没有 composition、没有 API key 的地方也能验证记账、折叠、归一化与策略。`tests/plugin.test.ts` 会把真实的 `apply()` 接到一个替身 context 上：验证 projection 单元能把一条真正的 `assistant/message` 事件折叠成按模型的开销、并能沿声明的 schema 往返；到达告警比例的步骤会把提示插到下游消息前面；而超预算且 `action: stop` 的运行会先收到预告，再在下一次边界被否决且不再调用 `next()`。
 
-Verified against `@deepseek-ai/cordis` 4.0.4, `@deepseek-ai/dsh-agent` / `dsh-llm` / `dsh-session` / `dsh-session-projection` 0.1.7-rc.1, `@deepseek-ai/schemastery` 3.18.4 and `zod` 4.4.3. Note the npm dist-tags: **`latest` is still the stale `0.0.1-rc.1`**, whose projection seam had a different contract; the current line is published under **`next`**. Install explicitly (`npm i @deepseek-ai/dsh-session-projection@next`) or the peer types you compile against predate `stateSchema` / `stateVersion`.
+已验证版本：`@deepseek-ai/cordis` 4.0.4、`@deepseek-ai/dsh-agent` / `dsh-llm` / `dsh-session` / `dsh-session-projection` 0.1.7-rc.1、`@deepseek-ai/schemastery` 3.18.4、`zod` 4.4.3。注意 npm 的 dist-tag：**`latest` 仍停留在过期的 `0.0.1-rc.1`**，那一版的 projection 接口契约完全不同；当前版本线发布在 **`next`** 下。请显式安装（`npm i @deepseek-ai/dsh-session-projection@next`），否则你编译时面对的 peer 类型还不认识 `stateSchema` / `stateVersion`。
 
-What is not covered here is the end-to-end case: boot a real `dsh` profile with this `cordis.patch.yml`, run a session past the cap, and confirm the step boundary cuts it.
+未覆盖的是端到端场景：用本仓库的 `cordis.patch.yml` 启动真实 `dsh` profile，跑过一个预算上限，确认步骤边界会切断它。
 
-## License
+## 许可证
 
 [MIT](LICENSE)
