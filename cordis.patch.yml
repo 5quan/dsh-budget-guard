@@ -1,0 +1,25 @@
+# dsh-budget-guard bundle layer.
+#
+# Applied when a profile lists this bundle (dsh plugin add, or a --patch
+# overlay). It inserts one plugin row; the loader finds the code through Node
+# resolution of the package name, so it works from a linked checkout, npm,
+# GitHub, or a tarball install alike.
+#
+# Every key is optional — omit one to take the schema default. The ceilings are
+# deployment-varying, so set them for your own account: `0` leaves a dimension
+# uncapped, and `costBudgetUsd` only has an effect for models listed in `rates`
+# (USD per one million tokens).
+- insert:
+    - id: budget-guard
+      name: dsh-budget-guard
+      config:
+        tokenBudget: 2000000
+        costBudgetUsd: 0
+        warnRatio: 0.8
+        action: stop
+        rates:
+          deepseek/deepseek-chat:
+            input: 0.27
+            output: 1.1
+            cacheRead: 0.07
+            cacheWrite: 0.27
